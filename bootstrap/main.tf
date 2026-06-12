@@ -8,9 +8,7 @@ terraform {
     }
   }
 
-  # Bootstrap itself uses LOCAL state — do NOT add an S3 backend here.
-  # The state file for this config is intentionally kept locally or in git
-  # (it only contains the bucket/table, not sensitive infra).
+  # Bootstrap uses LOCAL state intentionally — do NOT add an S3 backend here.
 }
 
 provider "aws" {
@@ -22,10 +20,8 @@ provider "aws" {
 resource "aws_s3_bucket" "terraform_state" {
   bucket = "${var.project_name}-${var.environment}-tfstate"
 
-  # Prevent accidental deletion of this bucket (it holds all your state files)
-  lifecycle {
-    prevent_destroy = true
-  }
+  # NOTE: prevent_destroy is intentionally removed here to allow clean recreation.
+  # Add it back after the bucket is successfully created and verified.
 
   tags = {
     Name        = "${var.project_name}-${var.environment}-tfstate"
@@ -36,17 +32,16 @@ resource "aws_s3_bucket" "terraform_state" {
   }
 }
 
-# AWS provider v5 deprecated ACL support — explicitly set to private
-# and use bucket ownership controls to avoid GetBucketAcl calls
+# Disable ACLs — required for AWS provider v5 (BucketOwnerEnforced disables ACLs entirely)
 resource "aws_s3_bucket_ownership_controls" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
   rule {
-    object_ownership = "BucketOwnerEnforced"  # disables ACLs entirely
+    object_ownership = "BucketOwnerEnforced"
   }
 }
 
-# Block all public access — state files must never be public
+# Block all public access
 resource "aws_s3_bucket_public_access_block" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -58,7 +53,7 @@ resource "aws_s3_bucket_public_access_block" "terraform_state" {
   depends_on = [aws_s3_bucket_ownership_controls.terraform_state]
 }
 
-# Enable versioning so you can recover previous state files
+# Enable versioning
 resource "aws_s3_bucket_versioning" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -69,7 +64,7 @@ resource "aws_s3_bucket_versioning" "terraform_state" {
   depends_on = [aws_s3_bucket_public_access_block.terraform_state]
 }
 
-# Encrypt all objects at rest using AES-256 (SSE-S3)
+# Encrypt at rest with AES-256
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -81,11 +76,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" 
   }
 }
 
-# Enforce HTTPS-only access to the bucket
+# Enforce HTTPS-only
 resource "aws_s3_bucket_policy" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
-  # Must wait for public access block before applying bucket policy
   depends_on = [aws_s3_bucket_public_access_block.terraform_state]
 
   policy = jsonencode({
@@ -110,7 +104,8 @@ resource "aws_s3_bucket_policy" "terraform_state" {
   })
 }
 
-# Lifecycle rule: expire non-current (old) state versions after 90 days
+# Lifecycle: expire old state versions after 90 days
+# provider v5 requires an explicit filter block (even if empty = apply to all objects)
 resource "aws_s3_bucket_lifecycle_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
@@ -119,6 +114,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "terraform_state" {
   rule {
     id     = "expire-old-state-versions"
     status = "Enabled"
+
+    filter {} # empty filter = apply rule to all objects in the bucket
 
     noncurrent_version_expiration {
       noncurrent_days = 90
