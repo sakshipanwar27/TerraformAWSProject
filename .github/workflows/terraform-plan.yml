@@ -1,0 +1,106 @@
+# Triggered on every Pull Request targeting main.
+# Runs: fmt check → init → validate → plan
+# The plan output is posted as a PR comment.
+
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "**.tf"
+      - "**.tfvars"
+      - ".github/workflows/terraform-plan.yml"
+
+permissions:
+  contents: read
+  pull-requests: write  # needed to post plan as PR comment
+
+env:
+  TF_VERSION: "1.7.5"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── AWS Credentials ─────────────────────────────────────────────────────
+      # Store AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in GitHub repo
+      # Settings → Secrets and variables → Actions → New repository secret
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      # ── Terraform Setup ──────────────────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      # ── Format Check ─────────────────────────────────────────────────────────
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      # ── Init ─────────────────────────────────────────────────────────────────
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      # ── Validate ─────────────────────────────────────────────────────────────
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+
+      # ── Plan ─────────────────────────────────────────────────────────────────
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        env:
+          TF_VAR_vpc_id:    ${{ secrets.TF_VAR_VPC_ID }}
+          TF_VAR_subnet_id: ${{ secrets.TF_VAR_SUBNET_ID }}
+
+      # ── Post plan as PR comment ───────────────────────────────────────────────
+      - name: Post Plan to PR
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Format \`${{ steps.fmt.outcome }}\`
+            #### Terraform Init \`${{ steps.init.outcome }}\`
+            #### Terraform Validate \`${{ steps.validate.outcome }}\`
+            #### Terraform Plan \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`terraform
+            ${{ steps.plan.outputs.stdout }}
+            \`\`\`
+
+            </details>
+
+            *Triggered by @${{ github.actor }}, Workflow: \`${{ github.workflow }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              body:         output
+            });
+
+      # ── Fail if plan failed ───────────────────────────────────────────────────
+      - name: Check Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1

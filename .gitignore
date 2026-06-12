@@ -1,0 +1,29 @@
+# Kiro IDE files — local only, not part of the project
+.kiro/
+
+# Terraform state files — never commit these
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Plan files
+tfplan
+*.tfplan
+
+# Terraform working directory
+.terraform/
+.terraform.lock.hcl
+
+# Variable files that may contain secrets
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
