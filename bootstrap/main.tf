@@ -20,7 +20,6 @@ provider "aws" {
 # ── S3 Bucket for Terraform Remote State ─────────────────────────────────────
 
 resource "aws_s3_bucket" "terraform_state" {
-  # Bucket names must be globally unique — the random suffix handles that.
   bucket = "${var.project_name}-${var.environment}-tfstate"
 
   # Prevent accidental deletion of this bucket (it holds all your state files)
@@ -37,6 +36,16 @@ resource "aws_s3_bucket" "terraform_state" {
   }
 }
 
+# AWS provider v5 deprecated ACL support — explicitly set to private
+# and use bucket ownership controls to avoid GetBucketAcl calls
+resource "aws_s3_bucket_ownership_controls" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"  # disables ACLs entirely
+  }
+}
+
 # Block all public access — state files must never be public
 resource "aws_s3_bucket_public_access_block" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
@@ -45,6 +54,8 @@ resource "aws_s3_bucket_public_access_block" "terraform_state" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+
+  depends_on = [aws_s3_bucket_ownership_controls.terraform_state]
 }
 
 # Enable versioning so you can recover previous state files
@@ -54,6 +65,8 @@ resource "aws_s3_bucket_versioning" "terraform_state" {
   versioning_configuration {
     status = "Enabled"
   }
+
+  depends_on = [aws_s3_bucket_public_access_block.terraform_state]
 }
 
 # Encrypt all objects at rest using AES-256 (SSE-S3)
@@ -71,6 +84,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" 
 # Enforce HTTPS-only access to the bucket
 resource "aws_s3_bucket_policy" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
+
+  # Must wait for public access block before applying bucket policy
+  depends_on = [aws_s3_bucket_public_access_block.terraform_state]
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -98,6 +114,8 @@ resource "aws_s3_bucket_policy" "terraform_state" {
 resource "aws_s3_bucket_lifecycle_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
+  depends_on = [aws_s3_bucket_versioning.terraform_state]
+
   rule {
     id     = "expire-old-state-versions"
     status = "Enabled"
@@ -112,7 +130,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "terraform_state" {
 
 resource "aws_dynamodb_table" "terraform_lock" {
   name         = "${var.project_name}-${var.environment}-tfstate-lock"
-  billing_mode = "PAY_PER_REQUEST" # no capacity planning needed for lock table
+  billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
 
   attribute {
@@ -120,7 +138,6 @@ resource "aws_dynamodb_table" "terraform_lock" {
     type = "S"
   }
 
-  # Enable point-in-time recovery for the lock table
   point_in_time_recovery {
     enabled = true
   }
